@@ -1,10 +1,11 @@
 package org.firstinspires.ftc.teamcode;
 
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
-import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
-import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.CRServo;
+import com.qualcomm.robotcore.hardware.Servo;
+import com.qualcomm.robotcore.util.ElapsedTime;
 
 @TeleOp(name = "DriveOp", group = "TeleOp")
 public class DriveOp extends OpMode {
@@ -14,8 +15,26 @@ public class DriveOp extends OpMode {
     private DcMotor backLeftMotor;
     private DcMotor backRightMotor;
     private DcMotor horzSlide;
-    private Servo wrist;
+    private DcMotor vertSlide;
+    public CRServo wrist;
     private Servo intake;
+    private Servo cup;
+    private Servo speci;
+    private ElapsedTime runtime = new ElapsedTime();
+
+    private int targetVertPosition = 0;
+    private int targetHorzPosition = 0;
+    private int MAX_VERT_POSITION = 5000;  // Set to max allowed vertical position
+    private int MIN_VERT_POSITION = 0;     // Set to min allowed vertical position
+    private int MAX_HORZ_POSITION = 3000;  // Set to max allowed horizontal position
+    private int MIN_HORZ_POSITION = 0;     // Set to min allowed horizontal position
+
+    private double Kp = 0.1, Ki = 0.1, Kd = 0.1;
+
+    private double vertIntegral = 0.0;
+    private double vertPreviousError = 0.0;
+    private double horzIntegral = 0.0;
+    private double horzPreviousError = 0.0;
 
     @Override
     public void init() {
@@ -24,29 +43,32 @@ public class DriveOp extends OpMode {
         backLeftMotor = hardwareMap.get(DcMotor.class, "backLeft");
         backRightMotor = hardwareMap.get(DcMotor.class, "backRight");
         horzSlide = hardwareMap.get(DcMotor.class, "horzSlide");
-        wrist = hardwareMap.get(Servo.class, "wrist");
+        vertSlide = hardwareMap.get(DcMotor.class, "vertSlide");
+        wrist = hardwareMap.get(CRServo.class, "wrist");
         intake = hardwareMap.get(Servo.class, "intake");
+        cup = hardwareMap.get(Servo.class, "cup");
+        speci = hardwareMap.get(Servo.class, "speci");
 
         frontLeftMotor.setDirection(DcMotor.Direction.FORWARD);
         frontRightMotor.setDirection(DcMotor.Direction.REVERSE);
         backLeftMotor.setDirection(DcMotor.Direction.FORWARD);
         backRightMotor.setDirection(DcMotor.Direction.REVERSE);
+        
         horzSlide.setDirection(DcMotor.Direction.FORWARD);
+        vertSlide.setDirection(DcMotor.Direction.FORWARD);
+        
+        vertSlide.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        vertSlide.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+
+        horzSlide.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        horzSlide.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
     }
 
     @Override
     public void loop() {
-        double drive1 = -gamepad1.left_stick_y; 
-        double strafe1 = gamepad1.left_stick_x;  
-        double turn1 = gamepad1.right_stick_x;
-
-        double drive2 = -gamepad2.left_stick_y;
-        double strafe2 = gamepad2.left_stick_x;
-        double turn2 = gamepad2.right_stick_x;
-
-        double drive = (drive1 + drive2) / 2.0;
-        double strafe = (strafe1 + strafe2) / 2.0;
-        double turn = (turn1 + turn2) / 2.0;
+           double drive = (gamepad1.left_stick_y + gamepad2.left_stick_y) / -2.0;
+        double strafe = (gamepad1.left_stick_x + gamepad2.left_stick_x) / 2.0;
+        double turn = (gamepad1.right_stick_x + gamepad2.right_stick_x) / 2.0;
 
         double frontLeftPower = drive + strafe + turn;
         double frontRightPower = drive - strafe - turn;
@@ -58,41 +80,79 @@ public class DriveOp extends OpMode {
         maxPower = Math.max(maxPower, Math.abs(backLeftPower));
         maxPower = Math.max(maxPower, Math.abs(backRightPower));
 
-        frontLeftPower /= maxPower;
-        frontRightPower /= maxPower;
-        backLeftPower /= maxPower;
-        backRightPower /= maxPower;
+        frontLeftMotor.setPower(frontLeftPower / maxPower);
+        frontRightMotor.setPower(frontRightPower / maxPower);
+        backLeftMotor.setPower(backLeftPower / maxPower);
+        backRightMotor.setPower(backRightPower / maxPower);
 
-        frontLeftMotor.setPower(frontLeftPower);
-        frontRightMotor.setPower(frontRightPower);
-        backLeftMotor.setPower(backLeftPower);
-        backRightMotor.setPower(backRightPower);
+               if (gamepad1.dpad_up || gamepad2.dpad_up) {
+            targetVertPosition += 50;
+        } else if (gamepad1.dpad_down || gamepad2.dpad_down) {
+            targetVertPosition -= 50;
+        }
+        
+        targetVertPosition = Math.max(MIN_VERT_POSITION, Math.min(MAX_VERT_POSITION, targetVertPosition));
 
-        if (gamepad1.dpad_left || gamepad2.dpad_left) {
-            horzSlide.setPower(1.0);
-        } else if (gamepad1.dpad_right || gamepad2.dpad_right) {
-            horzSlide.setPower(-1.0);
-        } else {
-            horzSlide.setPower(0.0);
+        int currentVertPosition = vertSlide.getCurrentPosition();
+        double vertError = targetVertPosition - currentVertPosition;
+
+        vertIntegral += vertError * runtime.seconds();
+        double vertDerivative = (vertError - vertPreviousError) / runtime.seconds();
+        double vertPower = (Kp * vertError) + (Ki * vertIntegral) + (Kd * vertDerivative);
+
+        vertPower = Math.max(Math.min(vertPower, 1.0), -1.0);
+        vertSlide.setPower(vertPower);
+        vertPreviousError = vertError;
+
+               if (gamepad1.dpad_right || gamepad2.dpad_right) {
+            targetHorzPosition += 50;
+        } else if (gamepad1.dpad_left || gamepad2.dpad_left) {
+            targetHorzPosition -= 50;
         }
 
-        if (gamepad1.right_bumper || gamepad2.right_bumper) {
-            wrist.setPosition(1.0);
-        } else {
-            wrist.setPosition(0.0);
-        }
+        targetHorzPosition = Math.max(MIN_HORZ_POSITION, Math.min(MAX_HORZ_POSITION, targetHorzPosition));
+
+        int currentHorzPosition = horzSlide.getCurrentPosition();
+        double horzError = targetHorzPosition - currentHorzPosition;
+
+        horzIntegral += horzError * runtime.seconds();
+        double horzDerivative = (horzError - horzPreviousError) / runtime.seconds();
+        double horzPower = (Kp * horzError) + (Ki * horzIntegral) + (Kd * horzDerivative);
+
+        horzPower = Math.max(Math.min(horzPower, 1.0), -1.0);
+        horzSlide.setPower(horzPower);
+        horzPreviousError = horzError;
 
         if (gamepad1.left_bumper || gamepad2.left_bumper) {
-            intake.setPosition(1.0);
+            intake.setPosition(1);
         } else {
-            intake.setPosition(0.0);
+            intake.setPosition(0);
+        }
+
+        if (gamepad1.left_trigger > 0.1) {
+            wrist.setPower(1.0);
+        } else if (gamepad1.right_trigger > 0.1) {
+            wrist.setPower(-1.0);
+        } else {
+            wrist.setPower(0.0);
+        }
+
+        if (gamepad1.b || gamepad2.b) {
+            cup.setPosition(1.0);
+        } else {
+            cup.setPosition(0.7);
         }
 
         telemetry.addData("Front Left Power", frontLeftPower);
         telemetry.addData("Front Right Power", frontRightPower);
         telemetry.addData("Back Left Power", backLeftPower);
         telemetry.addData("Back Right Power", backRightPower);
+        telemetry.addData("Vert Slide Power", vertSlide.getPower());
         telemetry.addData("Horz Slide Power", horzSlide.getPower());
+        telemetry.addData("Target Vert Position", targetVertPosition);
+        telemetry.addData("Current Vert Position", currentVertPosition);
+        telemetry.addData("Target Horz Position", targetHorzPosition);
+        telemetry.addData("Current Horz Position", currentHorzPosition);
         telemetry.update();
     }
 
@@ -102,6 +162,8 @@ public class DriveOp extends OpMode {
         frontRightMotor.setPower(0);
         backLeftMotor.setPower(0);
         backRightMotor.setPower(0);
+        vertSlide.setPower(0);
         horzSlide.setPower(0);
     }
 }
+
